@@ -6,3 +6,7 @@ Desktop.ini
 *.Rproj
 
 articles/
+.Rproj.user
+*.aux
+*.log
+*.gz
