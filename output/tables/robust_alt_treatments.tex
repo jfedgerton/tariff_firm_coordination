@@ -1,0 +1,34 @@
+
+\begin{table}
+\begin{center}
+\begin{tabular}{l c c c}
+\hline
+ & Binary waiver & Intensity (share) & Clean sample static DiD \\
+\hline
+waiver\_any                    & $-0.10^{***}$ &               &               \\
+                               & $(0.00)$      &               &               \\
+exposure\_deny                 & $0.24^{***}$  & $0.25^{***}$  &               \\
+                               & $(0.02)$      & $(0.01)$      &               \\
+log\_assets                    & $-0.02$       & $-0.02$       & $-0.01$       \\
+                               & $(0.01)$      & $(0.01)$      & $(0.03)$      \\
+leverage                       & $0.00$        & $-0.06$       & $-0.11$       \\
+                               & $(0.04)$      & $(0.03)$      & $(0.08)$      \\
+grant\_share                   &               & $-0.14^{***}$ &               \\
+                               &               & $(0.00)$      &               \\
+post\_tariff::1:treated\_clean &               &               & $-0.17^{***}$ \\
+                               &               &               & $(0.01)$      \\
+\hline
+Num. obs.                      & $2700$        & $2700$        & $720$         \\
+Num. groups: firm\_id          & $300$         & $300$         & $80$          \\
+Num. groups: year              & $9$           & $9$           & $9$           \\
+R$^2$ (full model)             & $0.98$        & $0.98$        & $0.98$        \\
+R$^2$ (proj model)             & $0.41$        & $0.48$        & $0.50$        \\
+Adj. R$^2$ (full model)        & $0.98$        & $0.98$        & $0.98$        \\
+Adj. R$^2$ (proj model)        & $0.41$        & $0.48$        & $0.50$        \\
+\hline
+\multicolumn{4}{l}{\scriptsize{$^{***}p<0.001$; $^{**}p<0.01$; $^{*}p<0.05$}}
+\end{tabular}
+\caption{Statistical models}
+\label{table:coefficients}
+\end{center}
+\end{table}
