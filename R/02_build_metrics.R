@@ -16,10 +16,10 @@ setDT(panel); setDT(edges)
 sets <- edges[, .(suppliers = list(sort(unique(supplier_id)))), by = .(firm_id, year)]
 panel <- merge(panel, sets, by = c("firm_id","year"), all.x = TRUE)
 
-# list-safe missing detector: element is NA if it's length 1 and is.na() is TRUE
-is_na_list <- function(x) length(x) == 1L && is.na(x[1])
+# list-safe missing detector: catches both NULL (from data.table merge) and NA
+is_missing_list <- function(x) is.null(x) || (length(x) == 1L && is.na(x[1]))
 
-miss_idx <- which(vapply(panel$suppliers, is_na_list, logical(1)))
+miss_idx <- which(vapply(panel$suppliers, is_missing_list, logical(1)))
 if (length(miss_idx) > 0L) {
   panel[miss_idx, suppliers := replicate(.N, list(character(0)), simplify = FALSE)]
 }
@@ -51,10 +51,15 @@ lag_map <- panel[, .(
 panel <- merge(panel, lag_map, by = c("firm_id", "year"), all.x = TRUE, sort = FALSE)
 
 # fill missing lag sets (first year per firm) with empty sets
-is_na_list <- function(x) length(x) == 1L && is.na(x[1])
+# data.table merge fills missing list entries with NULL (length 0), not NA
+is_missing_list <- function(x) is.null(x) || (length(x) == 1L && is.na(x[1]))
 
-miss_lag_idx <- which(vapply(panel$suppliers_lag, is_na_list, logical(1)))
+miss_lag_idx <- which(vapply(panel$suppliers_lag, is_missing_list, logical(1)))
+
+# Track which rows have no genuine lag (first year per firm)
+panel[, has_genuine_lag := TRUE]
 if (length(miss_lag_idx) > 0L) {
+  panel[miss_lag_idx, has_genuine_lag := FALSE]
   panel[miss_lag_idx, suppliers_lag := replicate(.N, list(character(0)), simplify = FALSE)]
 }
 
@@ -74,13 +79,17 @@ panel[, retention_rate := safe_div(n_inter, n_prev)]
 panel[, add_rate       := safe_div(n_add,   n_prev)]
 panel[, drop_rate      := safe_div(n_drop,  n_prev)]
 
+# Set metrics to NA for first year per firm (no genuine lag to compare against)
+lag_cols <- c("jaccard_t_t1", "churn_t_t1", "retention_rate", "add_rate", "drop_rate")
+panel[has_genuine_lag == FALSE, (lag_cols) := NA_real_]
+
 # ---- 3) Baseline similarity to a pre-policy year (e.g., 2017) ----
 baseline_year <- 2017
 base_sets <- panel[year == baseline_year, .(firm_id, suppliers_base = suppliers)]
 panel <- merge(panel, base_sets, by = "firm_id", all.x = TRUE)
 
 # list-safe NA fill for suppliers_base (DO NOT use is.na() on list columns)
-miss_base_idx <- which(vapply(panel$suppliers_base, is_na_list, logical(1)))
+miss_base_idx <- which(vapply(panel$suppliers_base, is_missing_list, logical(1)))
 if (length(miss_base_idx) > 0L) {
   panel[miss_base_idx, suppliers_base := replicate(.N, list(character(0)), simplify = FALSE)]
 }

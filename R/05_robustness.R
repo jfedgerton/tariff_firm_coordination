@@ -172,7 +172,7 @@ placebo_event_study <- function(data, B = 50, seed = 1){
       
       # firm-level cohort map
       map <- d[industry == ind & firm_id %in% ids,
-               .(firm_id, g = unique(g_year0)[1]),
+               .(g = unique(g_year0)[1]),
                by = firm_id]
       map <- map[g > 0]
       if(nrow(map) <= 2) next

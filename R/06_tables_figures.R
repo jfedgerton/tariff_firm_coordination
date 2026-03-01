@@ -68,7 +68,7 @@ trend <- dt1[, .(
 ), by = .(year, waiver_any)]
 
 p1 <- ggplot(trend, aes(x = year, y = churn, group = waiver_any, color = factor(waiver_any))) +
-  geom_line(size = 1) +
+  geom_line(linewidth = 1) +
   geom_point() +
   labs(x = NULL, y = "Mean churn (1 - Jaccard)", color = "Waiver any",
        title = "Average supplier churn over time by waiver status") +
