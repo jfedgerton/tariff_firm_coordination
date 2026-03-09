@@ -50,8 +50,11 @@ simulate_firm_supplier_panel <- function(
   # -------------------------
   # 2) Waiver requests (multiple per firm)
   # -------------------------
+  # ~20% of firms never apply for waivers (creates cleaner control group)
+  firms[, applied := rbinom(.N, 1, prob = 0.80)]
+
   # Decision timing roughly 2018-2020 (matches the proposal narrative)
-  firms_for_join <- copy(firms)
+  firms_for_join <- copy(firms[applied == 1L])
   setkey(firms_for_join, firm_id)
 
   requests <- firms_for_join[, {
@@ -132,9 +135,12 @@ simulate_firm_supplier_panel <- function(
 
   panel <- merge(panel, panel_long, by = c("firm_id","year"), all.x = TRUE)
 
-  # Replace NAs for pre-decision years with zeros
+  # Replace NAs for pre-decision years and non-applicant firms with zeros
   panel[is.na(n_decided), `:=`(n_decided = 0L, n_grant = 0L, n_deny = 0L,
                               comments_cum = 0L, support_cum = 0L, oppose_cum = 0L)]
+  # Non-applicant firms: fill missing aggregate fields
+  panel[is.na(ever_grant), `:=`(ever_grant = 0L, ever_deny = 0L,
+                                total_requests = 0L, total_comments = 0L)]
 
   panel[, grant_share := ifelse(n_decided == 0, 0, n_grant / n_decided)]
   panel[, waiver_any  := as.integer(n_grant > 0)]
@@ -153,8 +159,8 @@ simulate_firm_supplier_panel <- function(
   #   Build suppliers recursively with explicit persistence (keep fraction),
   #   so Jaccard(t,t-1) is not degenerate (all zeros).
   #
-  # We keep degree constant for simplicity (deg_target = degree0).
-  # We let post-policy persistence depend on waiver/denial and spillovers.
+  # Degree target is time-varying (degree0_t) to allow network size changes.
+  # Post-policy persistence depends on waiver/denial and spillovers.
   
   firm_ids <- firms$firm_id
   year0 <- years[1]
@@ -227,7 +233,7 @@ simulate_firm_supplier_panel <- function(
   for(yy in years[years > year0 & years <= pre_policy_end]){
     for(fid in firm_ids){
       ind <- firms[firm_id == fid, industry]
-      k   <- firms[firm_id == fid, degree0]
+      k   <- panel[firm_id == fid & year == yy, degree0_t]
       
       prev <- current_sets[[fid]]
       if(k == 0L){
@@ -286,9 +292,9 @@ simulate_firm_supplier_panel <- function(
     
     for(fid in firm_ids){
       ind <- firms[firm_id == fid, industry]
-      k   <- firms[firm_id == fid, degree0]
+      k   <- panel[firm_id == fid & year == yy, degree0_t]
       prev <- current_sets[[fid]]
-      
+
       own <- panel[firm_id == fid & year == yy]
       waiver <- own$waiver_any
       denied <- own$deny_any
@@ -335,6 +341,11 @@ simulate_firm_supplier_panel <- function(
   
   panel <- merge(panel, firm_year_geo, by = c("firm_id","year"), all.x = TRUE)
   panel[is.na(degree), degree := 0L]
+
+  # Pre-tariff China exposure: share_china in the pre_policy_end year
+  china_pre <- panel[year == pre_policy_end, .(firm_id, china_exposure_pre = share_china)]
+  panel <- merge(panel, china_pre, by = "firm_id", all.x = TRUE)
+  panel[is.na(china_exposure_pre), china_exposure_pre := 0]
 
   list(
     firms = firms,

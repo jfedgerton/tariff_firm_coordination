@@ -20,8 +20,10 @@ dt1 <- dt[!is.na(churn_t_t1)]
 # ------------------------------------------------------------
 vars <- c(
   "churn_t_t1","jaccard_t_t1","divergence_to_base",
+  "churn_china","churn_nonchina","edge_survival",
   "n_curr","log_degree",
   "waiver_any","deny_any","grant_share",
+  "china_exposure_pre",
   "exposure_deny","exposure_waive",
   "log_assets","leverage","share_china","share_usa"
 )

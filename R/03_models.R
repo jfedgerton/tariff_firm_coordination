@@ -44,9 +44,9 @@ m_es <- feols(
   cluster = ~ firm_id
 )
 
-# (4) DDD-style event-study: allow differential effects by political sensitivity
+# (4) DDD-style event-study: differential effects by political sensitivity (comment process)
 m_es_ddd <- feols(
-  churn_t_t1 ~ sunab(g_year0, year) * log_assets + leverage | firm_id + year,
+  churn_t_t1 ~ sunab(g_year0, year) * sensitivity_cum + log_assets + leverage | firm_id + year,
   data = dt1,
   cluster = ~ firm_id
 )
@@ -58,22 +58,65 @@ m_intensity <- feols(
   cluster = ~ firm_id
 )
 
+# (6) China exposure as continuous treatment — separates tariff shock from waiver channel
+m_china_exp <- feols(
+  churn_t_t1 ~ i(post_tariff, china_exposure_pre, ref = 0) + waiver_any + log_assets + leverage |
+    firm_id + year,
+  data = dt1,
+  cluster = ~ firm_id
+)
+
+# (7) Triple difference: tariff exposure × waiver × post
+m_triple_diff <- feols(
+  churn_t_t1 ~ i(post_tariff, china_exposure_pre, ref = 0) +
+    i(post_tariff, waiver_any, ref = 0) +
+    i(post_tariff, I(china_exposure_pre * waiver_any), ref = 0) +
+    log_assets + leverage | firm_id + year,
+  data = dt1,
+  cluster = ~ firm_id
+)
+
+# (8) Country-specific churn: do waivers specifically protect Chinese relationships?
+m_churn_china <- feols(
+  churn_china ~ waiver_any + deny_any + exposure_deny + log_assets + leverage | firm_id + year,
+  data = dt1[!is.na(churn_china)],
+  cluster = ~ firm_id
+)
+
+m_churn_nonchina <- feols(
+  churn_nonchina ~ waiver_any + deny_any + exposure_deny + log_assets + leverage | firm_id + year,
+  data = dt1[!is.na(churn_nonchina)],
+  cluster = ~ firm_id
+)
+
 # Save model objects
 saveRDS(list(
   m_twfe_1 = m_twfe_1,
   m_did_static = m_did_static,
   m_es = m_es,
   m_es_ddd = m_es_ddd,
-  m_intensity = m_intensity
+  m_intensity = m_intensity,
+  m_china_exp = m_china_exp,
+  m_triple_diff = m_triple_diff,
+  m_churn_china = m_churn_china,
+  m_churn_nonchina = m_churn_nonchina
 ), file = file.path(DIR_DATA, "models_fixest.rds"))
 
-# Export texreg table
+# Export texreg tables
 texreg::texreg(
   list(m_twfe_1, m_did_static, m_es, m_es_ddd, m_intensity),
   digits = 3,
   stars = c(0.001, 0.01, 0.05, 0.1),
-  custom.model.names = c("TWFE + spillovers", "Static DiD", "Event-study", "Event-study × sensitivity", "Intensity FE"),
+  custom.model.names = c("TWFE + spillovers", "Static DiD", "Event-study", "ES × sensitivity", "Intensity FE"),
   file = file.path(DIR_OUT_T, "reg_main_fixest.tex")
+)
+
+texreg::texreg(
+  list(m_china_exp, m_triple_diff, m_churn_china, m_churn_nonchina),
+  digits = 3,
+  stars = c(0.001, 0.01, 0.05, 0.1),
+  custom.model.names = c("China exposure", "Triple diff", "Churn (China)", "Churn (non-China)"),
+  file = file.path(DIR_OUT_T, "reg_china_exposure.tex")
 )
 log_msg("Wrote: output/tables/reg_main_fixest.tex")
 

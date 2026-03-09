@@ -192,17 +192,93 @@ placebo_event_study <- function(data, B = 50, seed = 1){
   out
 }
 
-# Run a small placebo demo
-placebo_draws <- placebo_event_study(dt1, B = 100, seed = 123)
+# Run placebo (increased iterations for publication)
+placebo_draws <- placebo_event_study(dt1, B = 500, seed = 123)
 saveRDS(placebo_draws, file = file.path(DIR_DATA, "robust_placebo_draws.rds"))
 
-placebo_hist <- ggplot(data.frame(placebo_draws), aes(x = placebo_draws)) + 
-  geom_histogram() + 
-  theme_minimal() + 
-  labs(title =  "Placebo distribution (shuffled event years)", 
-       x = "Mean post effect (event time 0..2)", 
+placebo_hist <- ggplot(data.frame(placebo_draws), aes(x = placebo_draws)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title =  "Placebo distribution (shuffled event years, B=500)",
+       x = "Mean post effect (event time 0..2)",
        y = "Count")
 ggsave(file.path(DIR_OUT_F, "placebo_distribution.png"), placebo_hist, width = 9, height = 6, dpi = 150)
+
+# ------------------------------------------------------------
+# 8) Leave-one-out cohort sensitivity
+#   Drop each treatment cohort one at a time and re-estimate
+# ------------------------------------------------------------
+cohorts <- sort(unique(dt1[g_year0 > 0, g_year0]))
+mods_loo <- list()
+for(coh in cohorts){
+  dd <- dt1[g_year0 != coh | g_year0 == 0]
+  mods_loo[[paste0("drop_", coh)]] <- run_es_fixest(dd, "churn_t_t1")
+}
+saveRDS(mods_loo, file = file.path(DIR_DATA, "robust_loo_cohort.rds"))
+
+texreg::texreg(
+  mods_loo,
+  custom.model.names = paste0("Drop ", cohorts),
+  file = file.path(DIR_OUT_T, "robust_loo_cohort.tex")
+)
+
+# ------------------------------------------------------------
+# 9) Pre-trend placebo: fake treatment in pre-period
+#   Use only pre-2018 data with a fake treatment date (2016)
+# ------------------------------------------------------------
+dt_pre <- copy(dt1[year <= 2017])
+dt_pre[, g_fake := ifelse(ever_waiver == 1, 2016L, 0L)]
+m_pretrend_placebo <- feols(
+  churn_t_t1 ~ sunab(g_fake, year) + log_assets + leverage | firm_id + year,
+  data = dt_pre, cluster = ~ firm_id
+)
+saveRDS(m_pretrend_placebo, file = file.path(DIR_DATA, "robust_pretrend_placebo.rds"))
+
+# ------------------------------------------------------------
+# 10) Heterogeneous treatment effects
+#   Estimate by firm size tercile and industry
+# ------------------------------------------------------------
+dt1[, size_tercile := cut(log_assets, breaks = quantile(log_assets, c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                          labels = c("Small", "Medium", "Large"), include.lowest = TRUE)]
+
+mods_hte_size <- list()
+for(sz in c("Small", "Medium", "Large")){
+  dd <- dt1[size_tercile == sz]
+  if(uniqueN(dd[g_year0 > 0, g_year0]) >= 2){
+    mods_hte_size[[sz]] <- run_es_fixest(dd, "churn_t_t1")
+  }
+}
+saveRDS(mods_hte_size, file = file.path(DIR_DATA, "robust_hte_size.rds"))
+
+if(length(mods_hte_size) > 0){
+  texreg::texreg(
+    mods_hte_size,
+    custom.model.names = names(mods_hte_size),
+    file = file.path(DIR_OUT_T, "robust_hte_size.tex")
+  )
+}
+
+# Estimate by pre-tariff China exposure tercile
+dt1[, china_tercile := cut(china_exposure_pre,
+                           breaks = quantile(china_exposure_pre, c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                           labels = c("Low", "Medium", "High"), include.lowest = TRUE)]
+
+mods_hte_china <- list()
+for(ch in c("Low", "Medium", "High")){
+  dd <- dt1[china_tercile == ch]
+  if(uniqueN(dd[g_year0 > 0, g_year0]) >= 2){
+    mods_hte_china[[ch]] <- run_es_fixest(dd, "churn_t_t1")
+  }
+}
+saveRDS(mods_hte_china, file = file.path(DIR_DATA, "robust_hte_china.rds"))
+
+if(length(mods_hte_china) > 0){
+  texreg::texreg(
+    mods_hte_china,
+    custom.model.names = paste0("China exp: ", names(mods_hte_china)),
+    file = file.path(DIR_OUT_T, "robust_hte_china.tex")
+  )
+}
 
 # Save robustness models
 saveRDS(list(
@@ -210,7 +286,8 @@ saveRDS(list(
   m_trim = m_trim,
   m_cluster_firm = m_cluster_firm,
   m_cluster_firm_ind = m_cluster_firm_ind,
-  m_weighted = m_weighted
+  m_weighted = m_weighted,
+  m_pretrend_placebo = m_pretrend_placebo
 ), file = file.path(DIR_DATA, "robust_models_misc.rds"))
 
 texreg::texreg(

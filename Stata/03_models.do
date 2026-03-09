@@ -18,11 +18,14 @@ reghdfe churn_t_t1 i.post_tariff##i.ever_waiver log_assets leverage, ///
 est store m_did_static
 
 gen rel_time = year - g_year if g_year>0
+* Event dummies: set to 0 for never-treated (keeps them as controls)
 forvalues k = 0/4 {
-    gen evt_p`k' = (rel_time==`k') if g_year>0
+    gen evt_p`k' = (rel_time==`k') if !missing(rel_time)
+    replace evt_p`k' = 0 if missing(evt_p`k')
 }
 forvalues k = 2/4 {
-    gen evt_m`k' = (rel_time==-`k') if g_year>0
+    gen evt_m`k' = (rel_time==-`k') if !missing(rel_time)
+    replace evt_m`k' = 0 if missing(evt_m`k')
 }
 reghdfe churn_t_t1 evt_p* evt_m* log_assets leverage, absorb(firm_id year) vce(cluster firm_id)
 est store m_es
