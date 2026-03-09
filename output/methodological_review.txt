@@ -1,0 +1,899 @@
+===============================================================================
+ METHODOLOGICAL REVIEW — Tariff Waivers & Supply-Chain Network Reconfiguration
+ Generated: 2026-03-09
+ Reviewer: Claude (design review + code audit + simulation diagnostics)
+===============================================================================
+
+This document covers all seven tasks from the review prompt:
+
+  TASK 1 — Research Design Critique (identification strategy)
+  TASK 2 — Network Metric Verification (formulas vs code)
+  TASK 3 — Code Audit (logic errors, data construction)
+  TASK 4 — Event-Study Implementation Assessment
+  TASK 5 — Simulation Checks (does the DGP match the theory?)
+  TASK 6 — Waiver Analysis Assessment
+  TASK 7 — Robustness Suite Evaluation
+
+Every claim is grounded in actual code lines and data diagnostics run against
+the generated dataset. Diagnostic outputs are reproduced inline.
+
+
+===============================================================================
+TASK 1 — RESEARCH DESIGN CRITIQUE
+===============================================================================
+
+1.1 TREATMENT DEFINITION: WAIVER RECEIPT AS TREATMENT
+------------------------------------------------------
+
+The current codebase defines treatment as waiver receipt (waiver_any = 1
+when n_grant > 0), with the staggered adoption event defined as
+g_year = first year a firm receives any granted waiver (g_year0 = 0 for
+never-treated).
+
+CONCERN 1: WAIVER ENDOGENEITY
+
+  Waivers are not randomly assigned. The simulation explicitly models
+  selection into treatment:
+
+    p_grant <- plogis(-0.3 + 0.6 * size_z + industry_penalty)
+    [01_simulate_data.R, line 60]
+
+  Larger firms are more likely to receive waivers (cor(size_z, grant_rate)
+  = 0.47 in the simulated data). This mirrors the real-world concern that
+  politically connected or larger firms are more likely to obtain waivers.
+
+  The DiD strategy absorbs firm-level selection via firm fixed effects,
+  but the TIMING of treatment (which year you get a waiver) may still be
+  endogenous. If firms that were already planning to restructure their
+  supply chains applied for waivers earlier, the event-study pre-trends
+  could look clean even though the treatment effect is confounded.
+
+  RECOMMENDATION: The entropy balancing in 05_robustness.R (line 117)
+  addresses observable selection but not selection on timing. Consider:
+  (a) Instrumenting for waiver receipt using comment process variables
+      (comment_count, support_share) — the simulation already generates
+      these, and they plausibly affect waiver approval without directly
+      affecting supplier restructuring.
+  (b) Using only the first-wave (2018) cohort for a cleaner comparison,
+      since later cohorts had more time to anticipate.
+  (c) Modeling selection into timing explicitly (e.g., Heckman-style
+      first-stage for waiver application timing).
+
+CONCERN 2: TREATMENT DEFINITION CONFLATES TARIFF EXPOSURE WITH WAIVER RECEIPT
+
+  The prompt describes the main hypothesis as: "Firms exposed to tariffs
+  will reconfigure their supplier networks." But the current codebase
+  does NOT explicitly model pre-tariff China exposure as a continuous
+  treatment intensity. Instead, it uses:
+
+    - waiver_any (binary: has any granted waiver request)
+    - deny_any (binary: has any denied request)
+    - grant_share (continuous: share of requests granted)
+
+  These measure waiver intensity, not tariff exposure. The two are
+  related but distinct:
+
+    Tariff exposure = share of pre-tariff imports from China
+    Waiver exposure = whether the firm received an exemption
+
+  The simulation generates share_china as an outcome but never uses
+  pre-tariff China exposure as a treatment variable. This is a gap
+  between the conceptual framework and the implementation.
+
+  RECOMMENDATION: Add a pre-tariff China exposure treatment:
+    china_exposure_pre = share_china in 2017 (pre-policy year)
+  Then estimate:
+    churn ~ post_tariff * china_exposure_pre + waiver_any + FE
+  This separates the tariff shock channel from the waiver mitigation
+  channel.
+
+CONCERN 3: ZERO NEVER-TREATED-NEVER-DENIED FIRMS
+
+  Diagnostic from actual data:
+
+    ever_deny  0    1
+    ever_grant
+    0          0   58
+    1         22  220
+
+  There are ZERO firms that never applied for or received any waiver
+  decision. Every firm in the simulation has at least one request
+  (rpois(1, 3) + 1 >= 1). This means:
+    - The "control group" (g_year0 = 0) consists of 58 firms that
+      applied but were ONLY denied — not firms unaffected by tariffs.
+    - The never-treated group is "always denied," which is a very
+      specific control group with its own selection problems.
+
+  RECOMMENDATION: The simulation should include firms that never
+  applied for waivers at all. In real data, many firms affected by
+  tariffs did not apply. Add a probability of non-application
+  (e.g., 20% of firms never file a waiver request). This creates
+  a cleaner control group and enables better identification.
+
+
+1.2 DIFFERENCE-IN-DIFFERENCES ASSUMPTIONS
+------------------------------------------
+
+PARALLEL TRENDS
+
+  Pre-treatment churn by group (from diagnostics):
+
+    Year    ever_grant=0    ever_grant=1    Difference
+    2015    0.2123          0.2160          +0.0037
+    2016    0.2209          0.2141          -0.0068
+    2017    0.2140          0.2136          -0.0004
+
+  These are essentially identical, supporting parallel trends. However,
+  this is BY CONSTRUCTION in the simulation: pre-policy churn is driven
+  by p_keep_pre_base (0.88) + noise, with no treatment-correlated
+  heterogeneity. In real data, parallel trends would need to be tested
+  and would likely show more divergence.
+
+  Post-treatment churn diverges sharply:
+
+    Post period:  control = 0.707,  treated = 0.616
+
+  The treatment effect is in the expected direction (waivers reduce churn).
+
+NO ANTICIPATION
+
+  The simulation generates waiver decision years in 2018-2020. Supplier
+  sets are simulated with waiver effects only in years > pre_policy_end
+  (2017). So there is no anticipation by construction. In real data,
+  firms may have anticipated tariffs (announced before implemented) and
+  begun restructuring pre-treatment. The event-study should show this
+  if it occurs.
+
+SUTVA (NO INTERFERENCE)
+
+  SUTVA is violated by design. The simulation explicitly generates
+  network spillovers:
+
+    p_keep_spill_add = -0.25  [01_simulate_data.R, line 208]
+
+  Firms whose neighbors were denied waivers experience more churn.
+  The correlation diagnostics confirm moderate interference:
+
+    cor(waiver_any, exposure_waive) = 0.19
+    cor(deny_any, exposure_deny)    = 0.16
+
+  The codebase addresses this with:
+    (a) Exposure mapping controls (04_network_spillovers.R)
+    (b) Community-clustered standard errors
+    (c) MRQAP diagnostic
+
+  This is a reasonable approach. See Task 6 for detailed assessment.
+
+STAGGERED TREATMENT
+
+  Treatment cohort sizes:
+
+    g_year0 = 0    (never-treated):  58 firms
+    g_year0 = 2018 (first cohort):  156 firms
+    g_year0 = 2019 (second cohort):  64 firms
+    g_year0 = 2020 (third cohort):   22 firms
+
+  The 2018 cohort is 64% of treated firms. The 2020 cohort has only 22
+  firms, which may be underpowered for cohort-specific ATTs.
+
+  The code uses both:
+    - fixest::sunab() for interaction-weighted event study
+    - did::att_gt() with "notyettreated" control group
+
+  Both are appropriate for staggered adoption. The Callaway-Sant'Anna
+  estimator is the more robust choice because it avoids the negative
+  weighting problems of TWFE.
+
+
+1.3 ALTERNATIVE IDENTIFICATION STRATEGIES TO CONSIDER
+------------------------------------------------------
+
+(a) SHIFT-SHARE / BARTIK IV
+    Use pre-tariff import composition × tariff schedule as an instrument
+    for firm-level tariff exposure. The exclusion restriction: pre-tariff
+    import shares predict tariff exposure but (conditional on FE) don't
+    directly affect supplier restructuring.
+
+(b) REGRESSION DISCONTINUITY ON WAIVER DECISIONS
+    If waiver decisions have a threshold component (e.g., comment support
+    share), firms near the threshold provide a local estimate of the
+    waiver effect. The simulation generates support_share which could
+    serve this purpose.
+
+(c) SYNTHETIC CONTROL
+    For the largest firms, construct synthetic control firms from the
+    donor pool of never-treated firms. This may be useful for
+    heterogeneous treatment effect analysis.
+
+(d) TRIPLE DIFFERENCE (DDD)
+    The current code has a DDD model (03_models.R, line 48) that
+    interacts sunab() with log_assets. A more natural DDD would
+    interact tariff exposure × waiver receipt × post:
+
+      churn ~ post * china_exposure_pre * waiver_any + FE
+
+    This cleanly separates the tariff shock from the waiver mitigation.
+
+
+===============================================================================
+TASK 2 — NETWORK METRIC VERIFICATION
+===============================================================================
+
+2.1 JACCARD SUPPLIER CHURN
+----------------------------
+
+FORMULA (conceptual):
+  Jaccard(A, B) = |A ∩ B| / |A ∪ B|
+  Churn = 1 - Jaccard(suppliers_t, suppliers_{t-1})
+
+CODE (00_setup.R, lines 61-67):
+  jaccard_vec <- function(a, b){
+    a <- unique(a); b <- unique(b)
+    if(length(a) == 0 && length(b) == 0) return(NA_real_)
+    inter <- length(intersect(a, b))
+    uni   <- length(union(a, b))
+    inter / uni
+  }
+
+VERIFICATION:
+  [CORRECT] Uses set operations on unique supplier IDs.
+  [CORRECT] Returns NA when both sets are empty (undefined).
+  [CORRECT] Returns 0 when one set is empty (no overlap).
+  [CORRECT] Applied via mapply on list-columns (02_build_metrics.R, line 68).
+  [CORRECT] Churn = 1 - Jaccard (line 69).
+  [VERIFIED] Identity churn + jaccard = 1 holds for all 2400 non-NA rows
+             (Flag Check 4 in code_review_report.txt).
+
+LIMITATION:
+  Jaccard treats all suppliers equally regardless of trade volume. A firm
+  that drops a $100M supplier and a firm that drops a $1K supplier get
+  the same Jaccard change if their total supplier counts are equal. The
+  prompt mentions "flow_value" but the simulation does not generate trade
+  volumes — all edges are unweighted.
+
+  RECOMMENDATION: Add a weighted Jaccard metric:
+    Weighted_Jaccard(t, t-1) = Σ_s min(w_s,t, w_s,t-1) / Σ_s max(w_s,t, w_s,t-1)
+  where w_s,t is the trade value with supplier s in year t.
+
+
+2.2 CHURN DECOMPOSITION (ADD/DROP/RETENTION)
+----------------------------------------------
+
+CODE (02_build_metrics.R, lines 74-80):
+  n_inter := length(intersect(suppliers_t, suppliers_{t-1}))
+  n_add   := length(setdiff(suppliers_t, suppliers_{t-1}))
+  n_drop  := length(setdiff(suppliers_{t-1}, suppliers_t))
+
+  retention_rate := n_inter / n_prev
+  add_rate       := n_add / n_prev
+  drop_rate      := n_drop / n_prev
+
+VERIFICATION:
+  [CORRECT] n_inter + n_add = n_curr (current suppliers = retained + new)
+  [CORRECT] n_inter + n_drop = n_prev (previous suppliers = retained + dropped)
+  [CORRECT] Rates denominated by n_prev (previous-year degree).
+  [CORRECT] Division by zero handled via safe_div (returns NA).
+
+LIMITATION:
+  All rates are denominated by n_prev. An alternative is to denominate
+  add_rate by n_curr (fraction of current suppliers that are new). Both
+  conventions are used in the literature. The current choice is consistent.
+
+
+2.3 BASELINE DIVERGENCE
+--------------------------
+
+CODE (02_build_metrics.R, lines 86-99):
+  suppliers_base = supplier set at baseline_year (2017)
+  jaccard_to_base = Jaccard(suppliers_t, suppliers_2017)
+  divergence_to_base = 1 - jaccard_to_base
+
+VERIFICATION:
+  [CORRECT] Measures cumulative divergence from pre-policy supplier set.
+  [CORRECT] This is a good complement to year-over-year Jaccard because
+            it captures total restructuring since the policy shock.
+  [NOTE]    The metric monotonically increases with time by construction
+            unless firms revert to old suppliers (unlikely under tariffs).
+
+
+2.4 GEOGRAPHIC REALLOCATION (CHINA SHARE)
+-------------------------------------------
+
+CODE (01_simulate_data.R, lines 330-333):
+  share_china = mean(country == "China") per firm-year
+  share_usa   = mean(country == "USA") per firm-year
+
+VERIFICATION:
+  [CORRECT] Counts are over edges (supplier relationships), not weighted
+            by trade volume.
+  [CONFIRMED] Post-tariff China share by waiver status (from diagnostics):
+
+    Period    waiver_any=0    waiver_any=1
+    pre       0.239           NA (no waivers pre-2018)
+    post      0.138           0.237
+
+  This shows the expected pattern: firms without waivers sharply reduce
+  China sourcing (0.239 → 0.138), while firms with waivers maintain it
+  (0.237 ≈ pre-tariff levels).
+
+LIMITATION:
+  share_china is based on supplier count, not import value. In real data,
+  value-weighted shares would be more economically meaningful.
+
+
+2.5 EDGE SURVIVAL (NOT IMPLEMENTED)
+--------------------------------------
+
+The prompt describes "edge survival" as a key outcome, but the current
+codebase does NOT implement a proper edge survival probability. The
+closest metric is retention_rate = n_inter / n_prev, which is an
+aggregate measure (not edge-level).
+
+RECOMMENDATION: Add edge-level survival analysis:
+  1. Create an edge-level panel: (firm_id, supplier_id, year, active)
+  2. Compute P(active_t | active_{t-1}) = edge survival probability
+  3. Estimate: survival ~ waiver_any + china_supplier + FE
+  This enables testing whether waivers specifically protect Chinese
+  supplier relationships.
+
+
+2.6 INTENSIVE MARGIN (NOT IMPLEMENTED)
+-----------------------------------------
+
+The prompt describes Δlog(flow_value) as a key intensive-margin outcome.
+The simulation does not generate trade volumes, so this outcome does not
+exist in the current data. When real data is available, add:
+
+  Δlog_flow_it = log(flow_value_it) - log(flow_value_{it-1})
+
+estimated on surviving edges only.
+
+
+2.7 INVENTORY BUFFERING (NOT IMPLEMENTED)
+--------------------------------------------
+
+The prompt mentions inventory-to-sales ratios. Not present in the
+simulation. This is understandable for a proof-of-concept but should
+be added when real firm financials are available.
+
+
+===============================================================================
+TASK 3 — CODE AUDIT
+===============================================================================
+
+See output/code_review_report.txt for the full code-level audit. This
+section highlights the findings most relevant to research correctness.
+
+3.1 BUGS FOUND AND FIXED (R pipeline)
+---------------------------------------
+
+BUG 1 [CRITICAL, FIXED]: First-year Jaccard corruption
+  Year 2014 had churn = 1.0 for all firms (should be NA). This meant
+  300 bogus observations entered all downstream models. The filter
+  dt[!is.na(churn_t_t1)] failed because Jaccard returned 0 (not NA)
+  when one set was empty. Root cause: data.table merge fills missing
+  list columns with NULL, and the detection function only checked for NA.
+  Fixed in 02_build_metrics.R.
+
+BUG 2 [MODERATE, FIXED]: use_packages() hard failure
+  Blocked entire pipeline when CRAN unreachable. Fixed in 00_setup.R.
+
+BUG 3 [MINOR, FIXED]: Deprecated ggplot2 parameter
+  geom_line(size=1) → geom_line(linewidth=1) in 06_tables_figures.R.
+
+BUG 4 [MINOR, FIXED]: Duplicate firm_id column
+  In placebo_event_study() in 05_robustness.R.
+
+
+3.2 BUGS FOUND IN STATA PIPELINE (UNFIXED)
+---------------------------------------------
+
+STATA BUG 1 [CRITICAL]: post_grant always 0
+  01_simulate_data.do line 85: "if g_year>." is never true in Stata.
+  Should be "if !missing(g_year)".
+
+STATA BUG 2 [CRITICAL]: Missing tsset before L. operator
+  02_build_metrics.do line 13: Will crash at runtime.
+
+STATA BUG 3 [MODERATE]: ever_deny hardcoded to 1
+  01_simulate_data.do line 92: Sets ever_deny=1 for all firms.
+
+STATA BUG 4 [MODERATE]: Control group dropped from event study
+  03_models.do lines 21-26: Event dummies generated only for treated
+  firms. Never-treated firms have missing dummies and are dropped by
+  reghdfe.
+
+
+3.3 SUPPLIER NETWORK CONSTRUCTION — CORRECT
+---------------------------------------------
+
+The bipartite firm-supplier network is constructed correctly:
+
+  1. Supplier sets are initialized from industry-specific pools with
+     20% global suppliers (induces cross-industry overlap).
+     [01_simulate_data.R, lines 42-44]
+
+  2. Year-over-year persistence uses an explicit keep-fraction model:
+     pre-policy:  p_keep = 0.88 + noise
+     post-policy: p_keep = 0.75 + 0.10*waiver - 0.10*deny - 0.25*exposure
+     [01_simulate_data.R, lines 200-208]
+
+  3. New suppliers are drawn from industry-China pools with treatment-
+     dependent China probabilities.
+     [01_simulate_data.R, line 314]
+
+  4. The overlap network W is computed from 2017 supplier sets and
+     row-normalized. Verified: all non-zero row sums = 1.0,
+     diagonal = 0. [Flag Check 9]
+
+
+3.4 TIME INDEXING — CORRECT AFTER FIX
+----------------------------------------
+
+The lag construction uses a self-merge approach:
+  lag_map: (firm_id, year+1, suppliers) → merges as suppliers_lag at year+1
+
+This correctly aligns suppliers at time t with suppliers at time t-1.
+Year 2014 (the first year) correctly gets NA after the fix.
+Verified: dt[!is.na(churn_t_t1)] yields years 2015-2022. [Flag Check 3]
+
+
+3.5 DUPLICATE / MISSING EDGE HANDLING — CORRECT
+-------------------------------------------------
+
+Supplier sets use unique() in construction:
+  current_sets[[fid]] <- unique(c(keep, add))
+  [01_simulate_data.R, line 246, 317]
+
+Edge-level data has no duplicates within firm-year (by construction).
+Panel has no duplicate firm-year rows. [Flag Check 2]
+Edge counts match panel degree for all firm-year rows. [Flag Check 10]
+
+
+===============================================================================
+TASK 4 — EVENT-STUDY IMPLEMENTATION ASSESSMENT
+===============================================================================
+
+4.1 CURRENT IMPLEMENTATION
+----------------------------
+
+The codebase implements three event-study specifications:
+
+(A) fixest::sunab() — Sun & Abraham (2021) interaction-weighted estimator
+    [03_models.R, lines 41-45]
+
+    churn_t_t1 ~ sunab(g_year0, year) + log_assets + leverage | firm_id + year
+
+    This decomposes the staggered treatment effect into cohort-specific
+    ATTs and aggregates them with clean weights, avoiding the negative
+    weighting problem of TWFE event studies.
+
+(B) Callaway-Sant'Anna (2021) via did::att_gt()
+    [03_models.R, lines 97-106]
+
+    Uses "notyettreated" control group and doubly-robust estimation
+    (est_method = "dr") with covariates log_assets, leverage, log_degree.
+
+(C) DDD event study: sunab() interacted with log_assets
+    [03_models.R, lines 48-52]
+
+ASSESSMENT:
+
+  [GOOD]    Using both sunab and C&S is excellent practice — they make
+            different assumptions and agreement strengthens credibility.
+
+  [GOOD]    "notyettreated" control group is the right choice for C&S
+            when the never-treated group is small (58 firms) and
+            potentially selected.
+
+  [GOOD]    Doubly-robust estimation (DR) is the most robust est_method.
+
+  [CONCERN] The DDD model (C) interacts sunab() with log_assets, but
+            the prompt describes a triple-difference with "political
+            sensitivity." The current sensitivity variable
+            (sensitivity_cum, line 143 of 01_simulate_data.R) is a binary
+            indicator of whether a firm received any public comments.
+            The DDD model should use this variable, not log_assets:
+
+            churn ~ sunab(g_year0, year) * sensitivity_cum + leverage
+                    | firm_id + year
+
+  [CONCERN] The event-study window is implicitly determined by the data
+            range (2015-2022 relative to g_year in 2018-2020). For the
+            2020 cohort, there are only 2 post-treatment periods. Consider
+            trimming the event window to [-3, +3] for comparability across
+            cohorts.
+
+
+4.2 RECOMMENDED ADDITIONAL EVENT-STUDY SPECIFICATIONS
+-------------------------------------------------------
+
+(a) SEPARATE TARIFF AND WAIVER SHOCKS
+
+    The current event study treats waiver receipt as the treatment event.
+    But there are really two events:
+      Event 1: Tariff imposition (2018 for all firms, common shock)
+      Event 2: Waiver receipt (staggered, 2018-2020)
+
+    A cleaner design would estimate:
+
+      churn ~ post_tariff * china_exposure_pre      [tariff shock]
+            + sunab(g_year0, year)                   [waiver effect]
+            + controls | firm_id + year
+
+(b) HETEROGENEOUS TREATMENT EFFECTS BY TARIFF LIST
+
+    The simulation generates request-level "list" (1-4), corresponding to
+    Section 301 Lists 1-4 with different tariff rates and timing. Currently
+    this variable is unused. Estimating effects by list would reveal whether
+    higher tariff rates cause more restructuring:
+
+      churn ~ sunab(g_year0, year) * list_exposure + controls | FE
+
+(c) OUTCOME-SPECIFIC EVENT STUDIES
+
+    The robustness script (05_robustness.R) already runs event studies
+    across alternative outcomes (add_rate, drop_rate, retention_rate,
+    divergence_to_base). This is good. Add share_china as another
+    event-study outcome to trace geographic reallocation dynamics.
+
+
+===============================================================================
+TASK 5 — SIMULATION CHECKS
+===============================================================================
+
+5.1 DOES THE SIMULATION MATCH THE THEORY?
+-------------------------------------------
+
+MATCH 1: Tariff shock causes supplier restructuring
+  The DGP shifts p_keep from 0.88 (pre) to 0.75 (post-base), causing a
+  jump in churn from ~0.21 to ~0.59+. This matches the theoretical
+  prediction.
+
+  Verified from data:
+    Pre-period mean churn:  0.215
+    Post-period mean churn: 0.651 (control), 0.616 (treated)
+
+MATCH 2: Waivers mitigate restructuring
+  p_keep_waive_add = +0.10 means waiver recipients retain more suppliers.
+  Verified: post-period churn is 0.616 for treated vs 0.707 for control
+  (ever_grant perspective). Direction is correct.
+
+MATCH 3: Denials increase restructuring
+  p_keep_deny_add = -0.10 pushes denied firms toward more churn.
+  This is embedded in the simulation but hard to isolate because most
+  firms (220/300) have both grants and denials.
+
+MATCH 4: Network spillovers transmit shocks
+  p_keep_spill_add = -0.25 * exposure_deny. A firm whose neighbors were
+  denied waivers experiences more churn. Verified: exposure_deny has
+  mean 0.86 post-2018, with sd = 0.15, providing variation.
+
+MATCH 5: Geographic reallocation
+  Post-policy China sourcing:
+    Waiver firms: 0.237 (roughly pre-tariff level)
+    Non-waiver firms: 0.138 (substantial decrease)
+  This matches the theory that waivers insulate China sourcing.
+
+
+5.2 SIMULATION FIDELITY CONCERNS
+----------------------------------
+
+CONCERN 1: CONSTANT DEGREE
+
+  The simulation holds supplier count (degree0) constant across all years
+  [01_simulate_data.R, lines 229, 289 use firms[firm_id == fid, degree0]].
+  The time-varying degree0_t is computed (line 92) but NEVER USED. In
+  reality, firms may expand or contract their supplier base in response
+  to tariffs. This means the simulation only captures REPLACEMENT (churn)
+  but not EXPANSION or CONTRACTION of supplier networks.
+
+  RECOMMENDATION: Use degree0_t instead of degree0 in the supplier
+  simulation loop. This would allow the number of suppliers to vary
+  over time, enabling analysis of the extensive margin of network size.
+
+CONCERN 2: NO INTENSIVE MARGIN (TRADE VALUES)
+
+  All edges are unweighted. The simulation cannot test intensive-margin
+  predictions (Δlog flow_value) or value-weighted metrics. When real data
+  is available, add trade volumes to edges.
+
+CONCERN 3: UNIFORM TREATMENT EFFECT
+
+  The waiver effect is a constant additive shift (+0.10 to p_keep).
+  In reality, effects likely vary by firm size, industry, exposure level,
+  number of affected product categories, etc. Consider heterogeneous
+  treatment effects in the DGP:
+
+    p_keep_waive_add = 0.10 + 0.05 * size_z  [larger firms benefit more]
+
+CONCERN 4: NO ANTICIPATION IN SIMULATION
+
+  Firms cannot anticipate tariffs in the DGP. In real data, the tariff
+  announcements preceded implementation by months. Firms may have begun
+  restructuring in 2017 (especially for List 1, announced in mid-2017).
+  Consider adding a small anticipation effect in the simulation to test
+  whether the event-study design can detect it.
+
+CONCERN 5: ALL FIRMS FILE WAIVER REQUESTS
+
+  Every firm has at least 1 request (rpois(1,3)+1 >= 1). This means
+  there are no "untouched" firms in the data. See Section 1.1, Concern 3.
+
+
+5.3 PROPOSED SIMULATION VALIDATION CHECKS
+-------------------------------------------
+
+These checks verify that the pipeline correctly DETECTS the effects
+built into the DGP. They should be added to a new script
+(e.g., R/07_simulation_validation.R).
+
+CHECK 1: KNOWN EFFECT RECOVERY
+  The DGP builds in a specific churn reduction from waivers.
+  The reduced-form effect on churn should be approximately:
+    Δ_churn ≈ -p_keep_waive_add = -0.10 (in keep-probability terms)
+  Verify that the event-study coefficient at event time 0 is in this
+  ballpark.
+
+CHECK 2: PLACEBO UNDER NULL
+  Set p_keep_waive_add = 0 and p_keep_deny_add = 0 (no treatment effect).
+  Re-run the simulation and estimation. The event-study coefficients
+  should all be indistinguishable from zero. This verifies that the
+  pipeline does not produce false positives.
+
+CHECK 3: DOSE-RESPONSE MONOTONICITY
+  Vary p_keep_waive_add from 0 to 0.20 in steps. The estimated ATT
+  should increase monotonically. If it doesn't, the estimator is
+  misspecified.
+
+CHECK 4: SENSITIVITY TO NETWORK DENSITY
+  Vary the W threshold (currently 0.05 at line 268 of 01_simulate_data.R)
+  from 0 to 0.20. Spillover estimates should weaken as the network
+  becomes sparser (fewer connections to transmit treatment).
+
+CHECK 5: POWER ANALYSIS
+  Vary n_firms from 100 to 1000. For each, compute the rejection rate
+  of the null hypothesis (ATT = 0). This establishes the minimum sample
+  size needed to detect the treatment effect at the simulated magnitude.
+
+
+===============================================================================
+TASK 6 — WAIVER ANALYSIS ASSESSMENT
+===============================================================================
+
+6.1 CURRENT WAIVER SPECIFICATIONS
+-----------------------------------
+
+The codebase estimates waiver effects through:
+
+(A) TWFE with time-varying waiver_any (03_models.R, line 22):
+    churn ~ waiver_any + deny_any + post_tariff + exposure + controls | FE
+
+(B) Staggered event study on first waiver year (03_models.R, line 41):
+    churn ~ sunab(g_year0, year) + controls | FE
+
+(C) Dose-response with grant_share (03_models.R, line 55):
+    churn ~ grant_share + exposure_deny + controls | FE
+
+(D) Callaway-Sant'Anna ATT (03_models.R, line 97):
+    att_gt with DR estimation and not-yet-treated controls
+
+ASSESSMENT:
+
+  [GOOD]    Multiple specifications with varying assumptions is excellent.
+
+  [GOOD]    Including deny_any alongside waiver_any in (A) separates the
+            waiver channel from the denial channel.
+
+  [GOOD]    grant_share in (C) captures continuous treatment intensity.
+
+  [CONCERN] The waiver effect in (A) and (B) conflates two mechanisms:
+            (i) waivers reduce tariff cost, enabling continued China sourcing
+            (ii) the waiver APPLICATION process signals firm intent
+            These should be separated by using waiver_any for (i) and
+            total_requests or comment_count for (ii).
+
+  [CONCERN] The event study treats the first grant year as the event.
+            But many firms have multiple requests across years (mean
+            requests per firm ≈ 3.8). Later grants may have incremental
+            effects. Consider a stacked DiD that treats each request as
+            a separate event.
+
+
+6.2 RECOMMENDED ADDITIONAL WAIVER SPECIFICATIONS
+--------------------------------------------------
+
+(a) INTERACTION WITH TARIFF EXPOSURE (the prompt's core specification)
+
+    churn ~ post_tariff * china_exposure_pre
+          + post_tariff * china_exposure_pre * waiver_any
+          + controls | FE
+
+    This is the triple-difference from the prompt. The coefficient on
+    the triple interaction tells you: "Does the waiver reduce the tariff-
+    induced restructuring among China-exposed firms?"
+
+(b) SEPARATE EXTENSIVE AND INTENSIVE WAIVER MARGINS
+
+    Model 1: churn ~ waiver_any + controls | FE          [any waiver]
+    Model 2: churn ~ n_grant + controls | FE             [count of grants]
+    Model 3: churn ~ grant_share + controls | FE         [share granted]
+
+    Compare coefficients to assess whether additional waivers have
+    diminishing returns.
+
+(c) DYNAMIC WAIVER EFFECTS (do waivers wear off?)
+
+    Use sunab with a longer post-treatment window. If waivers only
+    delay restructuring (rather than prevent it), the treatment effect
+    should attenuate at longer horizons (event time +3, +4).
+
+(d) WAIVER × SUPPLIER COUNTRY INTERACTION
+
+    churn_china ~ waiver_any + controls | FE
+    churn_non_china ~ waiver_any + controls | FE
+
+    Where churn_china measures turnover among Chinese suppliers only,
+    and churn_non_china among non-Chinese suppliers. This tests whether
+    waivers specifically protect Chinese relationships (the causal
+    mechanism) or reduce all churn (a more general stability effect).
+
+    This requires decomposing Jaccard by supplier country, which is not
+    currently implemented but straightforward:
+
+    jaccard_china_t_t1 = Jaccard(china_suppliers_t, china_suppliers_{t-1})
+
+
+===============================================================================
+TASK 7 — ROBUSTNESS SUITE EVALUATION
+===============================================================================
+
+7.1 EXISTING ROBUSTNESS CHECKS
+---------------------------------
+
+The following checks are implemented in 05_robustness.R:
+
+  [1] Alternative outcomes (churn, divergence, add/drop/retention rates)
+  [2] Alternative treatment definitions (binary, intensity, clean sample)
+  [3] Balanced panel restriction
+  [4] Degree trimming (p99)
+  [5] Alternative clustering (firm, firm+industry)
+  [6] Entropy balancing (WeightIt, ebal)
+  [7] Placebo permutation (shuffle event years, B=100)
+
+And in 04_network_spillovers.R:
+  [8] Exposure mapping controls
+  [9] Community-clustered SEs
+  [10] MRQAP diagnostic
+
+ASSESSMENT:
+
+  [STRONG]  This is a solid robustness suite for a simulation paper.
+            The placebo permutation test is particularly valuable.
+
+  [CONCERN] The clean sample (check 2C) is small. Only 22 firms are
+            "exclusively grant" and 58 are "exclusively deny." The
+            static DiD on 80 firms may be severely underpowered.
+
+  [CONCERN] Entropy balancing (check 6) conditions on baseline
+            covariates (log_assets, leverage, churn_pre, industry) but
+            does NOT condition on pre-treatment trends. If selection
+            into treatment is based on anticipated churn trajectories,
+            balancing on levels won't help.
+
+  [CONCERN] The placebo test (check 7) shuffles event years within
+            industry. But the shuffling preserves the NUMBER of treated
+            firms per industry. If treatment effects are industry-
+            specific, this placebo may over-reject.
+
+
+7.2 MISSING ROBUSTNESS CHECKS — RECOMMENDATIONS
+-------------------------------------------------
+
+HIGH PRIORITY:
+
+(a) LEAVE-ONE-OUT COHORT SENSITIVITY
+    Drop each treatment cohort (2018, 2019, 2020) one at a time and
+    re-estimate. This tests whether results are driven by a single
+    cohort (especially the dominant 2018 cohort with 156 firms).
+
+(b) PRE-TREND PLACEBO OUTCOMES
+    Estimate the same model on pre-period data only (2015-2017)
+    using a fake treatment date (e.g., 2016). The coefficient should
+    be zero. This is a stronger test than event-study pre-trends
+    because it uses the same estimator.
+
+(c) GOODMAN-BACON DECOMPOSITION
+    Decompose the TWFE estimate into its constituent 2x2 DID
+    comparisons to check for negative weights. The R package
+    bacondecomp implements this.
+
+(d) ALTERNATIVE NETWORK THRESHOLDS
+    The overlap network W is thresholded at 0.05 (Jaccard < 0.05
+    set to 0). Test sensitivity by varying this threshold: 0, 0.01,
+    0.05, 0.10, 0.20. If spillover estimates are fragile to this
+    choice, the network specification is not robust.
+
+MEDIUM PRIORITY:
+
+(e) EXCLUSION OF SMALL FIRMS
+    Firms with very few suppliers may have mechanically high churn.
+    Drop firms below the 10th percentile of degree and re-estimate.
+
+(f) WINSORIZATION OF OUTCOMES
+    Winsorize churn at the 1st and 99th percentiles to check
+    sensitivity to outliers.
+
+(g) ALTERNATIVE SPILLOVER DEFINITIONS
+    Replace Jaccard-overlap-based W with:
+    (i)  Same-industry indicator matrix
+    (ii) Geographic proximity matrix (if firm location data available)
+    (iii) Input-output table linkages
+
+(h) HETEROGENEOUS TREATMENT EFFECTS
+    Estimate separately by:
+    - Industry
+    - Firm size tercile
+    - Pre-tariff China exposure tercile
+    - Tariff list (1-4)
+
+LOWER PRIORITY:
+
+(i) BOOTSTRAP INFERENCE
+    The placebo permutation test is a form of randomization inference.
+    Additionally, wild cluster bootstrap (via fwildclusterboot) would
+    address potential finite-sample bias in clustered SEs, especially
+    for the small 2020 cohort.
+
+(j) BOUNDS ANALYSIS
+    Partial identification bounds (Manski-style or Oster 2019 delta)
+    to assess how much unobserved selection would be needed to explain
+    away the treatment effect.
+
+
+===============================================================================
+SUMMARY OF RECOMMENDATIONS (PRIORITIZED)
+===============================================================================
+
+CRITICAL (should be addressed before publishing):
+
+  1. Add pre-tariff China exposure as a continuous treatment variable
+     alongside waiver receipt. The current design cannot separate the
+     tariff shock channel from the waiver mitigation channel.
+
+  2. Include firms that never applied for waivers in the simulation.
+     The current control group (always-denied firms) is selected.
+
+  3. Fix the 4 Stata bugs documented in code_review_report.txt.
+
+HIGH PRIORITY (strengthens identification significantly):
+
+  4. Add edge-level survival analysis and country-specific Jaccard
+     decomposition.
+
+  5. Use degree0_t instead of degree0 in the simulation to allow
+     time-varying network size.
+
+  6. Add Goodman-Bacon decomposition and leave-one-out cohort checks.
+
+  7. Implement the triple-difference specification from the prompt:
+     churn ~ post * china_exposure * waiver + FE
+
+MEDIUM PRIORITY (useful additions):
+
+  8. Add weighted Jaccard using trade volumes (when real data available).
+
+  9. Test alternative network thresholds for spillover robustness.
+
+  10. Add heterogeneous treatment effect analysis by industry, size,
+      and tariff list.
+
+  11. Increase placebo iterations from 100 to 1000+ for publication.
+
+  12. Add simulation validation checks (null DGP, dose-response
+      monotonicity, power analysis).
+
+
+===============================================================================
+END OF METHODOLOGICAL REVIEW
+===============================================================================
