@@ -82,14 +82,23 @@ replace total_requests = 0 if missing(total_requests)
 replace total_comments = 0 if missing(total_comments)
 gen g_year = first_grant_year
 gen g_year0 = cond(missing(g_year),0,g_year)
-gen post_grant = (year>=g_year) if g_year>.
+gen post_grant = (year>=g_year) if !missing(g_year)
 replace post_grant = 0 if missing(post_grant)
 
 * Approximate cumulative treatment intensity tracker
 bysort firm_id (year): gen n_decided = cond(year<2018,0,year-2017)
 replace n_decided = max(n_decided,0)
 by firm_id: gen ever_grant = !missing(g_year)
-by firm_id: gen ever_deny  = 1
+* Compute ever_deny from request data
+tempfile deny_flag
+preserve
+use "$DIR_DATA/sim_requests.dta", clear
+gen denied = (grant==0)
+collapse (max) ever_deny=denied, by(firm_id)
+save `deny_flag', replace
+restore
+merge m:1 firm_id using `deny_flag', nogenerate
+replace ever_deny = 0 if missing(ever_deny)
 
 gen n_grant = round(n_decided*runiform())
 gen n_deny  = n_decided - n_grant

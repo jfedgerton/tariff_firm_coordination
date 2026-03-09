@@ -20,8 +20,10 @@ dt1 <- dt[!is.na(churn_t_t1)]
 # ------------------------------------------------------------
 vars <- c(
   "churn_t_t1","jaccard_t_t1","divergence_to_base",
+  "churn_china","churn_nonchina","edge_survival",
   "n_curr","log_degree",
   "waiver_any","deny_any","grant_share",
+  "china_exposure_pre",
   "exposure_deny","exposure_waive",
   "log_assets","leverage","share_china","share_usa"
 )
@@ -68,7 +70,7 @@ trend <- dt1[, .(
 ), by = .(year, waiver_any)]
 
 p1 <- ggplot(trend, aes(x = year, y = churn, group = waiver_any, color = factor(waiver_any))) +
-  geom_line(size = 1) +
+  geom_line(linewidth = 1) +
   geom_point() +
   labs(x = NULL, y = "Mean churn (1 - Jaccard)", color = "Waiver any",
        title = "Average supplier churn over time by waiver status") +

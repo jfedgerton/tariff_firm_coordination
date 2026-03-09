@@ -9,11 +9,14 @@ use "$DIR_DATA/panel_metrics.dta", clear
 keep if !missing(churn_t_t1)
 
 gen rel_time = year - g_year if g_year>0
+* Event dummies: set to 0 for never-treated (keeps them as controls)
 forvalues k = 0/4 {
-    gen evt_p`k' = (rel_time==`k') if g_year>0
+    gen evt_p`k' = (rel_time==`k') if !missing(rel_time)
+    replace evt_p`k' = 0 if missing(evt_p`k')
 }
 forvalues k = 2/4 {
-    gen evt_m`k' = (rel_time==-`k') if g_year>0
+    gen evt_m`k' = (rel_time==-`k') if !missing(rel_time)
+    replace evt_m`k' = 0 if missing(evt_m`k')
 }
 
 * 1) Alternative outcomes

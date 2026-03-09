@@ -8,9 +8,12 @@ do "Stata/00_setup.do"
 use "$DIR_DATA/sim_panel.dta", clear
 sort firm_id year
 
+* Declare panel structure (required for lag operator L.)
+encode firm_id, gen(firm_id_num)
+tsset firm_id_num year
+
 * Lag-based overlap proxy (since full set-Jaccard is R-specific)
-by firm_id: gen degree_lag = L.degree
-replace degree_lag = . if _n==1
+gen degree_lag = L.degree
 
 gen n_curr = degree
 gen n_prev = degree_lag

@@ -1,0 +1,471 @@
+===============================================================================
+ CODE REVIEW REPORT — Tariff Waivers x Supplier Networks
+ Generated: 2026-03-01
+ Reviewer: Claude (automated review + manual flag checks)
+===============================================================================
+
+This report documents a full review of all R scripts (00-06) and Stata
+companion scripts. It includes:
+
+  PART A — Bugs found and fixed (R pipeline)
+  PART B — Bugs found in Stata pipeline (unfixed — flagged for your attention)
+  PART C — 14 automated data integrity flag checks (all PASS)
+  PART D — Cross-pipeline consistency issues (R vs Stata)
+  PART E — Script-by-script audit (R)
+  PART F — Script-by-script audit (Stata)
+  PART G — File dependency chain
+
+Review methodology: Every script was read line-by-line. Scripts 01-02 were
+executed and output verified. Scripts 03-06 were reviewed statically (the
+packages fixest, did, texreg, modelsummary, WeightIt, cobalt are unavailable
+in this environment due to CRAN being blocked by the network proxy).
+
+===============================================================================
+PART A — BUGS FOUND AND FIXED (R PIPELINE)
+===============================================================================
+
+BUG 1 [CRITICAL] — 02_build_metrics.R: First-year churn corruption
+----------------------------------------------------------------------
+  Location:  02_build_metrics.R, lines 53-63 (after fix)
+  Severity:  Critical — silently corrupts all downstream model estimates
+
+  Problem:   Year 2014 (the first panel year) has no prior year to compute
+             Jaccard similarity against. The lag column (suppliers_lag) was
+             filled with character(0) when missing. jaccard_vec(suppliers,
+             character(0)) returns 0 (not NA), because the function only
+             returns NA when BOTH sets are empty. This gave all 300 firms
+             churn_t_t1 = 1.0 in 2014 — a fabricated 100% churn rate.
+
+             The filter dt[!is.na(churn_t_t1)] in scripts 03-06 was INTENDED
+             to exclude 2014, but it failed because churn was 0-1 (not NA).
+
+             Result: event-study pre-trends, Callaway-Sant'Anna, and all
+             robustness checks included 300 bogus observations.
+
+  Root cause: data.table merge with all.x=TRUE fills missing list-column
+              entries with NULL (length 0), not list(NA). The original
+              is_na_list() function only checked for length-1 NA, not NULL.
+
+  Fix:        Replaced is_na_list() with is_missing_list() that catches both
+              NULL and NA. Added has_genuine_lag tracking column. Set
+              jaccard_t_t1, churn_t_t1, retention_rate, add_rate, drop_rate
+              to NA_real_ for rows without a genuine lag.
+
+  Verification: After fix, year 2014 has 300/300 rows with NA churn. The
+                filter dt[!is.na(churn_t_t1)] now correctly yields 2400
+                rows (300 firms x 8 years, 2015-2022).
+
+
+BUG 2 [MODERATE] — 00_setup.R: Hard failure on missing packages
+----------------------------------------------------------------------
+  Location:  00_setup.R, lines 10-17 (before fix)
+  Severity:  Moderate — blocks entire pipeline when any package is unavailable
+
+  Problem:   use_packages() called library() unconditionally for all packages
+             after install.packages(). If CRAN was unreachable or a package
+             was unavailable, library() threw a fatal error, preventing even
+             scripts that don't need the missing packages from running.
+
+  Fix:        Wrapped install.packages() in tryCatch(). Replaced unconditional
+              library() with requireNamespace() check + warning for missing
+              packages. Scripts 01-02 (which only need data.table, dplyr, etc.)
+              now run successfully even when fixest/did/etc. are unavailable.
+
+
+BUG 3 [MINOR] — 06_tables_figures.R: Deprecated ggplot2 parameter
+----------------------------------------------------------------------
+  Location:  06_tables_figures.R, line 71
+  Severity:  Minor — deprecation warning, not an error (yet)
+
+  Problem:   geom_line(size = 1) — the 'size' aesthetic for line geoms was
+             deprecated in ggplot2 3.4.0 in favor of 'linewidth'. This
+             currently produces a warning but will become an error in a
+             future ggplot2 release.
+
+  Fix:        Changed to geom_line(linewidth = 1).
+
+
+BUG 4 [MINOR] — 05_robustness.R: Duplicate column in placebo test
+----------------------------------------------------------------------
+  Location:  05_robustness.R, line 174 (before fix)
+  Severity:  Minor — data.table silently handles it, but fragile
+
+  Problem:   In placebo_event_study(), the data.table expression included
+             firm_id in both j (the select) and by (the group), creating a
+             duplicate firm_id column. While data.table doesn't crash, this
+             is undefined behavior that could break in future versions.
+
+  Fix:        Removed redundant firm_id from the j expression.
+
+
+===============================================================================
+PART B — BUGS FOUND IN STATA PIPELINE (UNFIXED)
+===============================================================================
+
+These bugs are in the Stata companion scripts. They were NOT fixed because
+this review focused on the R pipeline. They are flagged here for your
+attention.
+
+STATA BUG 1 [CRITICAL] — 01_simulate_data.do line 85: post_grant always 0
+---------------------------------------------------------------------------
+  Code:    gen post_grant = (year>=g_year) if g_year>.
+
+  Problem: In Stata, missing (.) is treated as positive infinity. The
+           condition "g_year>." is NEVER true — no value exceeds missing.
+           So post_grant is set to missing for ALL observations. The next
+           line "replace post_grant = 0 if missing(post_grant)" then sets
+           everything to 0, making the variable useless.
+
+  Correct: gen post_grant = (year>=g_year) if !missing(g_year)
+           replace post_grant = 0 if missing(post_grant)
+
+  Impact:  Every model that uses post_grant will produce wrong results.
+           The R equivalent works correctly:
+             panel[, post_grant := as.integer(!is.na(g_year) & year >= g_year)]
+
+
+STATA BUG 2 [CRITICAL] — 02_build_metrics.do line 13: Missing tsset
+----------------------------------------------------------------------
+  Code:    by firm_id: gen degree_lag = L.degree
+
+  Problem: The lag operator L. requires the data to be declared as panel
+           data via "tsset firm_id year" or "xtset firm_id year". Without
+           this declaration, Stata will error:
+             "operator L. requires data to be tsset or xtset"
+
+  Fix:     Add before line 13:
+             tsset firm_id year
+
+  Impact:  Script will crash at runtime.
+
+
+STATA BUG 3 [MODERATE] — 01_simulate_data.do line 92: ever_deny hardcoded
+---------------------------------------------------------------------------
+  Code:    by firm_id: gen ever_deny = 1
+
+  Problem: Sets ever_deny to 1 for ALL firms. In R, ever_deny is correctly
+           computed as as.integer(any(grant == 0)) — whether any request
+           was denied. The Stata version ignores the actual request outcomes.
+
+  Impact:  Downstream clean-sample robustness check (05_robustness.do) that
+           filters on xor(ever_grant, ever_deny) becomes degenerate — no
+           treated firms survive the filter.
+
+
+STATA BUG 4 [MODERATE] — 03_models.do lines 21-26: Control group dropped
+---------------------------------------------------------------------------
+  Code:    gen evt_p0 = (rel_time==0) if g_year>0
+           [... similar for evt_p1 through evt_p4, evt_m2 through evt_m4]
+
+  Problem: Event-study dummies are only generated for treated firms
+           (g_year>0). For never-treated firms, these dummies are missing.
+           reghdfe drops observations with missing regressors, so the entire
+           control group is lost from event-study regressions.
+
+  Fix:     Replace "if g_year>0" with unconditional generation, and set
+           dummies to 0 for never-treated firms:
+             gen evt_p0 = (rel_time==0) if !missing(rel_time)
+             replace evt_p0 = 0 if missing(evt_p0)
+
+
+===============================================================================
+PART C — AUTOMATED DATA INTEGRITY FLAG CHECKS (14/14 PASS)
+===============================================================================
+
+These checks were run against the actual generated data after fixing bugs 1-4.
+
+FLAG  1: Panel balance ............................................. PASS
+  300 firms x 9 years = 2700 rows. All firms have exactly 9 rows.
+
+FLAG  2: No duplicate firm-year rows ............................... PASS
+  0 duplicate rows found.
+
+FLAG  3: First year (2014) churn is NA ............................. PASS
+  All 300 rows in 2014 have churn_t_t1 = NA (was 1.0 before fix).
+  has_genuine_lag = FALSE for all 2014 rows.
+
+FLAG  4: churn_t_t1 == 1 - jaccard_t_t1 ........................... PASS
+  Identity holds within floating-point tolerance (1e-10) for all 2400
+  non-NA rows.
+
+FLAG  5: churn_t_t1 bounded [0, 1] ................................ PASS
+  Range: 0.087 to 0.800. No out-of-bounds values.
+
+FLAG  6: Treatment timing matches narrative ........................ PASS
+  first_grant_year range: 2018-2020
+  first_deny_year range: 2018-2020
+  g_year0 values: 0, 2018, 2019, 2020
+  Never-treated firms (g_year0==0): 58 of 300
+
+FLAG  7: Waiver variables consistency .............................. PASS
+  waiver_any: all values in {0, 1}
+  deny_any: all values in {0, 1}
+  grant_share: all values in [0, 1]
+  post_grant consistent with g_year for all treated firms.
+
+FLAG  8: Exposure variables well-defined ........................... PASS
+  exposure_deny range: [0, 1]
+  exposure_waive range: [0, 1]
+  No NAs in either variable.
+
+FLAG  9: W_norm row normalization .................................. PASS
+  All 300 rows have non-zero sums.
+  All non-zero row sums equal exactly 1.0.
+  Diagonal is all zeros.
+
+FLAG 10: Edge counts match panel degree ............................ PASS
+  0 mismatched firm-year rows between edges table and panel degree column.
+
+FLAG 11: No NAs in core analysis columns (years 2015-2022) ......... PASS
+  Checked: firm_id, year, industry, log_assets, leverage, waiver_any,
+  deny_any, grant_share, churn_t_t1, exposure_deny, exposure_waive,
+  log_degree. Total NAs: 0.
+
+FLAG 12: Pre-treatment parallel trends ............................. PASS (visual)
+  Mean churn by ever_grant status, pre-2018:
+    Year    ever_grant=0    ever_grant=1    Difference
+    2015    0.2123          0.2160          0.0037
+    2016    0.2209          0.2141         -0.0068
+    2017    0.2140          0.2136         -0.0004
+  Pre-treatment differences are negligible (<0.01), supporting parallel
+  trends assumption.
+
+FLAG 13: Reproducibility fingerprint ............................... RECORDED
+  Panel: 2700 rows x 52 columns
+  Edges: 69,597 rows
+  Requests: 1,151 rows
+  Firms: 300 | Suppliers: 2,500
+  Numeric checksum (mean of all numeric column means): 909.3784
+  (Compare against a fresh run of 01 + 02 to verify seed reproducibility.)
+
+FLAG 14: Expected data files exist ................................. PASS
+  sim_panel.rds            82.2 KB
+  sim_edges.rds           117.6 KB
+  sim_requests.rds         19.2 KB
+  sim_firms.rds            11.2 KB
+  sim_suppliers.rds        10.0 KB
+  sim_W_norm.rds           33.0 KB
+  panel_metrics.rds       358.6 KB
+  panel_metrics.csv      3285.2 KB
+
+
+===============================================================================
+PART D — CROSS-PIPELINE CONSISTENCY (R vs STATA)
+===============================================================================
+
+The Stata scripts are described as "companion replication scripts" but diverge
+from the R pipeline in several substantive ways:
+
+1. SUPPLIER SIMULATION
+   R:     Full bipartite edge-level simulation with explicit persistence,
+          China/non-China sourcing, and waiver-dependent supplier churn.
+   Stata: Approximates degree, share_china, share_usa with random noise.
+          No edge-level data. Churn metrics are synthetic proxies.
+
+2. NETWORK EXPOSURE
+   R:     Uses pre-policy overlap-weighted network matrix (W_norm) derived
+          from Jaccard similarity of supplier sets.
+   Stata: Uses industry-year leave-one-out means as a proxy.
+
+3. COMMUNITY DETECTION
+   R:     Louvain clustering on the overlap network (igraph::cluster_louvain).
+   Stata: Uses industry groupings as a proxy (egen group(industry)).
+
+4. CALLAWAY-SANT'ANNA
+   R:     Full implementation via did::att_gt + aggte.
+   Stata: Not implemented despite csdid being checked in 00_setup.do.
+
+5. ROBUSTNESS CHECKS
+   R:     Entropy balancing (WeightIt), alternative clustering, placebo
+          permutation test (100 draws).
+   Stata: Omits all three.
+
+6. RANDOM SEED
+   R:     Simulation function uses seed=123 (overrides global set.seed(12345)).
+   Stata: Uses seed 12345 throughout.
+
+These are not necessarily problems — the Stata scripts are documented as
+approximate companions — but you should be aware of the differences if citing
+cross-validation between the two pipelines.
+
+
+===============================================================================
+PART E — SCRIPT-BY-SCRIPT AUDIT (R)
+===============================================================================
+
+00_setup.R (83 lines)
+  Purpose:  Package loading, path setup, helper functions (jaccard_vec,
+            safe_div, log_msg).
+  Status:   Fixed (Bug 2). Now gracefully warns on missing packages.
+  Notes:    No data operations. Defines ROOT, DIR_DATA, DIR_OUT_T, DIR_OUT_F.
+
+01_simulate_data.R (363 lines)
+  Purpose:  Simulates firm-supplier panel with staggered waiver adoption.
+  Status:   Clean. Runs successfully. Produces 6 RDS files.
+  Outputs:  data/sim_panel.rds, sim_edges.rds, sim_requests.rds,
+            sim_firms.rds, sim_suppliers.rds, sim_W_norm.rds
+  Notes:    - degree0_t column created (line 92) but never used downstream.
+              The actual degree used is degree0 from the firms table. This
+              is dead code but harmless.
+            - W matrix computation (lines 259-275) is O(n^2) in firms. For
+              300 firms this is fast; would need optimization for larger N.
+
+02_build_metrics.R (153 lines)
+  Purpose:  Computes Jaccard similarity, churn, baseline divergence, exposure.
+  Status:   Fixed (Bug 1). Runs successfully.
+  Outputs:  data/panel_metrics.rds, panel_metrics.csv
+  Notes:    - is_missing_list() now correctly handles both NULL and NA entries
+              from data.table merge operations.
+            - CSV export converts list columns to character (lines 133-140).
+
+03_models.R (129 lines)
+  Purpose:  TWFE, static DiD, event-study (sunab), DDD, intensity models.
+  Status:   Reviewed (not executed — requires fixest, did).
+  Outputs:  data/models_fixest.rds, models_did_cs.rds
+            output/tables/reg_main_fixest.tex
+            output/figures/event_study_fixest.png,
+                           event_study_callaway_santanna.png
+  Notes:    - Line 95: dt1 <- as.data.frame(dt1) converts entire working
+              dataset from data.table to data.frame for did::att_gt
+              compatibility. After this point, data.table syntax is
+              unavailable on dt1.
+            - Lines 113-115: C&S accessor (att.egt vs att) handles multiple
+              versions of the did package. Good defensive coding.
+
+04_network_spillovers.R (95 lines)
+  Purpose:  Exposure mapping controls, community-clustered SEs, MRQAP.
+  Status:   Reviewed (not executed — requires fixest, texreg).
+  Outputs:  data/models_spillovers.rds
+            output/tables/reg_spillover_strategies.tex
+  Notes:    - MRQAP uses 200 permutations for speed. Should be increased
+              (e.g., 2000+) for publication-quality inference.
+
+05_robustness.R (223 lines)
+  Purpose:  Alternative outcomes, treatments, balanced panel, trimming,
+            clustering, entropy balancing, placebo permutation test.
+  Status:   Fixed (Bug 4). Reviewed (not executed — requires fixest,
+            WeightIt, texreg).
+  Outputs:  data/robust_alt_outcomes.rds, robust_alt_treatments.rds,
+            robust_placebo_draws.rds, robust_models_misc.rds
+            output/tables/robust_alt_outcomes.tex,
+                          robust_alt_treatments.tex, robust_misc.tex
+            output/figures/placebo_distribution.png
+  Notes:    - Placebo test runs B=100 iterations. Increase for publication.
+            - extract_post02() function extracts mean post-treatment effect
+              (event times 0-2) from sunab coefficients. Regex parsing of
+              coefficient names is version-sensitive.
+
+06_tables_figures.R (132 lines)
+  Purpose:  Summary statistics, trend plots, network visualization, heatmaps.
+  Status:   Fixed (Bug 3). Reviewed (not executed — requires fixest).
+  Outputs:  output/tables/summary_stats.csv, .tex, .md
+            output/figures/trend_churn_by_waiver.png,
+                           bipartite_network_subset.png,
+                           overlap_heatmap_subset.png
+  Notes:    - Line 12: mods_fix is loaded (readRDS) but never used. Harmless
+              but dead code.
+            - Lines 96-97: igraph vertex $type attribute is set twice. First
+              to logical is_firm, then overwritten with grepl("^S", ...) for
+              bipartite layout compatibility. The is_firm assignment on line
+              96 is redundant since type is immediately overwritten on line 97.
+
+
+===============================================================================
+PART F — SCRIPT-BY-SCRIPT AUDIT (STATA)
+===============================================================================
+
+00_setup.do
+  Purpose:  Version, seed, paths, directories, log, package checks.
+  Status:   Clean (minor: log reopened by each sub-script).
+
+01_simulate_data.do
+  Purpose:  Firm-level panel simulation, waiver requests, treatment variables.
+  Status:   TWO BUGS (post_grant always 0; ever_deny hardcoded to 1).
+  Outputs:  data/sim_panel.dta, sim_requests.dta
+
+02_build_metrics.do
+  Purpose:  Lag-based metrics, exposure, baseline similarity.
+  Status:   ONE BUG (missing tsset before L. operator — will crash).
+  Outputs:  data/panel_metrics.dta
+
+03_models.do
+  Purpose:  TWFE, static DiD, event-study, DDD, intensity.
+  Status:   ONE BUG (never-treated firms dropped from event-study).
+  Outputs:  output/tables/reg_main_stata.tex
+
+04_network_spillovers.do
+  Purpose:  Exposure controls, community-clustered SEs.
+  Status:   Clean (but community = industry, not Louvain).
+  Outputs:  output/tables/reg_spillover_stata.tex
+
+05_robustness.do
+  Purpose:  Alternative outcomes/treatments, balanced panel, trimming.
+  Status:   Degenerate clean-sample (downstream of ever_deny bug).
+  Outputs:  output/tables/robust_*.tex
+
+06_tables_figures.do
+  Purpose:  Summary stats, trend plot.
+  Status:   Clean.
+  Outputs:  output/tables/summary_stats_stata.csv, .tex
+            output/figures/trend_churn_stata.png
+
+run_all.do
+  Purpose:  Sequentially executes all scripts.
+  Status:   Clean (minor: log reopened 8 times).
+
+
+===============================================================================
+PART G — FILE DEPENDENCY CHAIN
+===============================================================================
+
+  R/00_setup.R  (helpers, packages, paths)
+       |
+       v
+  R/01_simulate_data.R
+       |  Writes: data/sim_panel.rds
+       |          data/sim_edges.rds
+       |          data/sim_requests.rds
+       |          data/sim_firms.rds
+       |          data/sim_suppliers.rds
+       |          data/sim_W_norm.rds
+       v
+  R/02_build_metrics.R
+       |  Reads:  data/sim_panel.rds, sim_edges.rds, sim_W_norm.rds
+       |  Writes: data/panel_metrics.rds, panel_metrics.csv
+       v
+  R/03_models.R  -----.
+       |  Reads:  data/panel_metrics.rds
+       |  Writes: data/models_fixest.rds, models_did_cs.rds
+       |          output/tables/reg_main_fixest.tex
+       |          output/figures/event_study_fixest.png
+       |          output/figures/event_study_callaway_santanna.png
+       |
+  R/04_network_spillovers.R
+       |  Reads:  data/panel_metrics.rds, sim_W_norm.rds
+       |  Writes: data/models_spillovers.rds
+       |          output/tables/reg_spillover_strategies.tex
+       |
+  R/05_robustness.R
+       |  Reads:  data/panel_metrics.rds
+       |  Writes: data/robust_alt_outcomes.rds
+       |          data/robust_alt_treatments.rds
+       |          data/robust_placebo_draws.rds
+       |          data/robust_models_misc.rds
+       |          output/tables/robust_alt_outcomes.tex
+       |          output/tables/robust_alt_treatments.tex
+       |          output/tables/robust_misc.tex
+       |          output/figures/placebo_distribution.png
+       |
+  R/06_tables_figures.R
+       |  Reads:  data/panel_metrics.rds, sim_edges.rds, sim_W_norm.rds,
+       |          models_fixest.rds
+       |  Writes: output/tables/summary_stats.csv, .tex, .md
+       |          output/figures/trend_churn_by_waiver.png
+       |          output/figures/bipartite_network_subset.png
+       |          output/figures/overlap_heatmap_subset.png
+
+  Scripts 03-06 all depend on 02 but are independent of each other.
+
+===============================================================================
+END OF REPORT
+===============================================================================

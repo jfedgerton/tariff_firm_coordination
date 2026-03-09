@@ -11,9 +11,19 @@ use_packages <- function(pkgs){
   missing <- pkgs[!pkgs %in% rownames(installed.packages())]
   if(length(missing) > 0){
     message("Installing missing packages: ", paste(missing, collapse=", "))
-    install.packages(missing, dependencies = TRUE)
+    tryCatch(
+      install.packages(missing, dependencies = TRUE),
+      error = function(e) message("install.packages failed: ", conditionMessage(e))
+    )
   }
-  invisible(lapply(pkgs, library, character.only = TRUE))
+  for(p in pkgs){
+    if(requireNamespace(p, quietly = TRUE)){
+      library(p, character.only = TRUE)
+    } else {
+      warning("Package '", p, "' is not available — skipping.", call. = FALSE)
+    }
+  }
+  invisible(NULL)
 }
 
 use_packages(c(
