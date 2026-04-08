@@ -1,0 +1,64 @@
+# ==============================================================
+# .gitignore — Tariff Exemptions x Supplier Networks
+# Keep ALL data, outputs, and intermediate files out of the repo.
+# Only code, documentation, and project config should be tracked.
+# ==============================================================
+
+# ---- Raw data (all formats) ----
+*.csv
+*.xlsx
+*.xls
+*.dta
+*.sav
+*.rds
+*.rda
+*.RData
+*.parquet
+*.feather
+*.fst
+*.arrow
+*.json
+*.tsv
+
+# ---- Data directories ----
+data/
+CSV Files/
+Excel Files/
+FactSet/
+Yeti_Records/
+edge_data/
+edge_nodes/
+CIK_GVKEY.csv
+Compustat_Exemptions.csv
+Compustat_NAICS_SIC.csv
+Exemptions_Matched_gvkeyisin.csv
+
+# ---- PDFs (exemption request attachments, very large) ----
+PDFs/
+
+# ---- Python scraping notebooks (contain scraped data in outputs) ----
+Python/
+
+# ---- Output (regenerated from code) ----
+output/
+
+# ---- R artifacts ----
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj.user
+
+# ---- macOS junk ----
+.DS_Store
+._*
+
+# ---- Editor / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- OS ----
+Thumbs.db
+desktop.ini

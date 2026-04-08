@@ -1,0 +1,209 @@
+==============================================================================
+DATA DISCREPANCIES — Items for Coauthor to Confirm/Correct
+==============================================================================
+Date: 2026-03-18
+
+We audited the Exemptions Project folder contents against the meeting notes.
+Below are items where the notes and the actual data disagree or where
+clarification is needed. Each item lists:
+
+  YOUR NOTE:     What the meeting notes say
+  WHAT WE FOUND: What the actual files contain
+  QUESTION:      What we need you to confirm
+
+
+------------------------------------------------------------------------------
+ITEM 1: Firm HQ in FactSet edge list
+------------------------------------------------------------------------------
+YOUR NOTE:
+  "FactSet data: Supplier HQ country for the firms. We will can get the
+  company HQ from a coauthor."
+
+WHAT WE FOUND:
+  The FactSet edge list (edge_nodes/Exemptions_SampleData.xlsx) ALREADY has
+  a firm_hq column with zero missing values across all 74,792 rows. The
+  breakdown is: US (68,309), IE (1,866), CA (1,275), AN (892), JE (704),
+  NL (503), and others.
+
+  However, supplier_hq IS incomplete: 34,815 of 74,792 rows (46.5%) have
+  no supplier_hq value.
+
+QUESTION:
+  Is the existing firm_hq column correct and usable, or does it need to be
+  replaced with data from the coauthor? And is the coauthor providing the
+  MISSING SUPPLIER HQ values (not firm HQ), or is it actually firm HQ that
+  needs updating?
+
+
+------------------------------------------------------------------------------
+ITEM 2: Exemption data identifiers (GVKEY / ISIN)
+------------------------------------------------------------------------------
+YOUR NOTE:
+  "Exemption data is going to be the treatment has a firm ID that is GVKEY
+  and ISIN keys."
+
+WHAT WE FOUND:
+  None of the exemption CSV files contain GVKEY or ISIN columns. Specifically:
+
+  - CSV Files/Tables/Requests1_Table.csv columns:
+      Doc Type, Request Doc-ID, Organization Name, 10-Digit HTS,
+      Date Posted, Response Closes, Reply Closes, Stages
+
+  - CSV Files/Tables/Requests3_Table.csv columns:
+      Request, Org, Status, HTSUS, Product, Post Date, Close Date
+
+  - CSV Files/FullRequests/ files also have no GVKEY or ISIN fields.
+
+  The only firm identifier in the exemption data is the organization NAME
+  (free text, e.g. "Sea Eagle Boats, Inc", "Cap America, Inc."). Matching
+  these names to FactSet GVKEYs requires a crosswalk (fuzzy string matching
+  or manual review).
+
+QUESTION:
+  Does a name-to-GVKEY crosswalk already exist somewhere? Or does one need
+  to be built? If there is a version of the exemption data that already has
+  GVKEYs attached, where is it? This is the critical merge step for the
+  entire project.
+
+
+------------------------------------------------------------------------------
+ITEM 3: FullRequests vs Tables — which has the treatment variable?
+------------------------------------------------------------------------------
+YOUR NOTE:
+  "CSV Files/FullRequest has the exemption data."
+  (And separately: Tables can be ignored.)
+
+WHAT WE FOUND:
+  The FullRequests files for Lists 3 and 4a do NOT contain a Status/decision
+  column. The Granted/Denied outcome only appears in the Tables files:
+
+  - Requests3_Table.csv has: Request, Org, Status, HTSUS, Product, ...
+  - Requests3_Full.csv has: Request_ID, Org, HTSUS, Product_Name, ...
+    but NO Status column.
+
+  For Lists 1-2, the decision is embedded in the Title field of the
+  FullRequests as free text (e.g., "Exclusion Denied, Joyfay International
+  LLC, high frequency induction heater, HTS 8514400000"), but there is no
+  clean status column.
+
+  So the Tables files ARE needed — they are the only source of clean
+  grant/deny decisions for Lists 3-4a, and the cleanest source for Lists 1-2.
+
+QUESTION:
+  Can you confirm the Tables should be kept for the treatment variable?
+  The FullRequests are valuable for the detailed request text, arguments,
+  and comments, but they cannot replace the Tables for the Granted/Denied
+  outcome without additional parsing.
+
+
+------------------------------------------------------------------------------
+ITEM 4: FactSet financials year coverage
+------------------------------------------------------------------------------
+YOUR NOTE:
+  "Compustat will be used for controls will have GVKEY."
+
+WHAT WE FOUND:
+  The file FactSet/FactSet_19_23.dta covers fiscal years 2019-2023 only
+  (70,184 rows). It has Compustat-style variables: total assets (fat),
+  revenue (frevt), COGS (fcogs), long-term debt (fdltt), cash (fche),
+  inventories (finvt), R&D (fxrd), plus SIC codes.
+
+  But the FactSet edge list goes back to at least 2011. For pre-2019 panel
+  years, we have no financial controls unless a separate Compustat pull
+  is available.
+
+QUESTION:
+  Is additional Compustat data coming for pre-2019 years? The pre-policy
+  period (before 2018) is critical for the DiD design — without pre-2019
+  controls, the entropy balancing and covariate adjustment in the pre-period
+  will be based on forward-filled 2019 values, which is not ideal.
+
+
+------------------------------------------------------------------------------
+ITEM 5: Folder name mismatch
+------------------------------------------------------------------------------
+YOUR NOTE:
+  "Two sets of edges. First, the supplier ties from only top suppliers. That
+  is in edge_data/Exemptions_SampleData."
+
+WHAT WE FOUND:
+  The folder is named "edge_nodes", not "edge_data".
+
+  Path: Exemptions Project/edge_nodes/Exemptions_SampleData.xlsx
+
+QUESTION:
+  Minor naming issue — just flagging for consistency. Should the folder be
+  renamed, or is "edge_nodes" the intended name?
+
+
+------------------------------------------------------------------------------
+ITEM 6: Yeti Records — multiple files per firm
+------------------------------------------------------------------------------
+YOUR NOTE:
+  "Yeti_Records need to be cleaned since the firm names are changing."
+
+WHAT WE FOUND:
+  370 CSV files across ~294 unique firm names. Many firms have numbered
+  files, for example:
+    ABB 1.csv, ABB 2.csv
+    Aceto 1.csv, Aceto 2.csv, Aceto 3.csv
+    Xylem 1.csv, Xylem 2.csv, Xylem 3.csv
+
+QUESTION:
+  Are these numbered files different time windows (e.g., batches from
+  different scraping runs), different product categories, or something else?
+  We need to know whether to simply concatenate them or whether there is
+  overlap that needs deduplication.
+
+
+------------------------------------------------------------------------------
+ITEM 7: Yeti Records — time coverage
+------------------------------------------------------------------------------
+YOUR NOTE:
+  "Import data: Updated daily and weighted (will turn into weekly, monthly,
+  or quarterly)"
+
+WHAT WE FOUND:
+  The sample file (A O Smith 1.csv) has Arrival Dates in late 2023
+  (12/26/23, 12/28/23 in the first few rows). We did not scan all 370 files
+  for the full date range.
+
+QUESTION:
+  What is the full time period covered by the Yeti Records? Does it cover
+  2017-2023 (matching the FactSet pre/post policy window), or a narrower
+  range?
+
+
+------------------------------------------------------------------------------
+ITEM 8: Import data scope clarification
+------------------------------------------------------------------------------
+YOUR NOTE:
+  "Import data is non US import data only."
+
+WHAT WE FOUND:
+  The Yeti Records are US CUSTOMS records of goods ENTERING the United
+  States. The Company Country is always "United States" (the buyer), and
+  the Supplier Country is the foreign origin (China, Hong Kong, Japan, etc.).
+
+  So these are US IMPORTS from non-US suppliers — not "non-US import data."
+  Just want to make sure the terminology is clear: this is US inbound trade,
+  not trade between two non-US countries.
+
+QUESTION:
+  Can you confirm: the Yeti Records capture US firms importing goods from
+  foreign suppliers, correct? There is no data on exports or on trade
+  between two non-US countries?
+
+
+------------------------------------------------------------------------------
+SUMMARY OF ACTION ITEMS
+------------------------------------------------------------------------------
+
+  [ ] ITEM 1: Confirm whether firm_hq or supplier_hq needs coauthor data
+  [ ] ITEM 2: Confirm whether a GVKEY crosswalk exists or needs to be built
+  [ ] ITEM 3: Confirm Tables files are needed for grant/deny decisions
+  [ ] ITEM 4: Confirm whether pre-2019 Compustat data is coming
+  [ ] ITEM 5: Confirm folder name (edge_nodes vs edge_data) — minor
+  [ ] ITEM 6: Explain what numbered Yeti files represent
+  [ ] ITEM 7: Confirm Yeti Records time coverage
+  [ ] ITEM 8: Confirm import data = US inbound trade from foreign suppliers
